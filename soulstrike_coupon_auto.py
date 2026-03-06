@@ -12,17 +12,42 @@ from screeninfo import get_monitors
 import threading
 import time
 
+# ================= 사용자 설정 =================
 URL = "https://coupon.withhive.com/soulstrike?t=1737278324092"
 
 CS_CODE_INPUT_SELECTOR = "input#cs_code"
 COUPON_INPUT_SELECTOR = "input#coupon_code"
 SUBMIT_BUTTON_SELECTOR = "button.btn_use"
+
+# 서버 선택용
+SERVER_DROPDOWN_BTN = "div.select_wrap > button.btn_select"
+SERVER_OPTION_BTN = "div.select_wrap ul.list_select li button"
 SLEEP_SEC = 1.5
+# =================================================
 
 def log_append(msg):
     txt_log.insert(tk.END, msg + "\n")
     txt_log.see(tk.END)
     root.update_idletasks()
+
+def select_server(driver, wait, server_text="KR/JP/GLB"):
+    # 드롭다운 열기
+    wait.until(
+        EC.element_to_be_clickable((By.CSS_SELECTOR, SERVER_DROPDOWN_BTN))
+    ).click()
+
+    # 옵션 목록 가져오기
+    options = wait.until(
+        EC.presence_of_all_elements_located((By.CSS_SELECTOR, SERVER_OPTION_BTN))
+    )
+
+    for opt in options:
+        if opt.text.strip() == server_text:
+            opt.click()
+            return
+
+    raise Exception(f"서버 옵션 '{server_text}' 찾지 못함")
+
 
 def run_coupon_process(excel_path, coupon_codes):
     try:
@@ -52,6 +77,11 @@ def run_coupon_process(excel_path, coupon_codes):
         driver.get(URL)
         wait = WebDriverWait(driver, 10)
         log_append("✅ 페이지 접속 완료.")
+        
+        # 서버 선택
+        select_server(driver, wait, server_text="KR/JP/GLB")
+        log_append("✅ 서버 선택 완료.")
+        time.sleep(0.5)  # DOM 안정화
 
         for row_idx, cs_code in enumerate(ids, start=2):
             lbl_status.config(text=f"현재 처리 중: {cs_code}")

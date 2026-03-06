@@ -1,2 +1,0 @@
-파워쉘
-pyinstaller --noconsole --onefile soulstrike_coupon_auto.py
