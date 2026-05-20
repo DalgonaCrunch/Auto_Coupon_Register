@@ -2,13 +2,18 @@
 from __future__ import annotations
 
 import asyncio
+import ctypes
 import json
 import logging
 import os
 import re
+import sys
+import threading
 from collections import Counter
 from functools import wraps
 
+import pystray
+from PIL import Image, ImageDraw
 from dotenv import load_dotenv
 from telegram import Update
 from telegram.constants import ParseMode
@@ -27,10 +32,6 @@ from paths import base_dir
 # Load .env from the directory next to the exe / script, not CWD.
 load_dotenv(dotenv_path=base_dir() / ".env")
 
-logging.basicConfig(
-    format="%(asctime)s %(levelname)s %(name)s - %(message)s",
-    level=logging.INFO,
-)
 logger = logging.getLogger("coupon_bot")
 
 TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN", "").strip()
@@ -336,12 +337,63 @@ def _format_summary(results: list[coupon_engine.CouponResult]) -> str:
     return "\n".join(lines)
 
 
-def main() -> None:
-    if not TOKEN:
-        raise SystemExit("TELEGRAM_BOT_TOKEN 이 비어있습니다. .env 를 확인하세요.")
-    if not ALLOWED_CHAT_IDS:
-        raise SystemExit("ALLOWED_CHAT_IDS 가 비어있습니다. .env 를 확인하세요.")
+def _setup_logging() -> None:
+    """File-based logging. In --windowed PyInstaller builds there is no
+    console, so we redirect logs to bot.log next to the exe. stdout/stderr
+    are also redirected to devnull-equivalent to avoid crashes from libraries
+    that try to write directly."""
+    # PyInstaller --windowed sets these to None; pad them so prints don't crash.
+    if sys.stdout is None:
+        sys.stdout = open(os.devnull, "w", encoding="utf-8")
+    if sys.stderr is None:
+        sys.stderr = open(os.devnull, "w", encoding="utf-8")
 
+    log_path = base_dir() / "bot.log"
+    handler = logging.FileHandler(log_path, encoding="utf-8")
+    handler.setFormatter(
+        logging.Formatter("%(asctime)s %(levelname)s %(name)s - %(message)s")
+    )
+    root = logging.getLogger()
+    root.setLevel(logging.INFO)
+    # Clear any default handlers (e.g. from libraries) and use our file handler.
+    for h in list(root.handlers):
+        root.removeHandler(h)
+    root.addHandler(handler)
+
+
+def _show_error_box(message: str) -> None:
+    """Pop a native Windows MessageBox. Used when the tray app can't even
+    start (missing token etc.) — otherwise the failure would be invisible."""
+    try:
+        ctypes.windll.user32.MessageBoxW(0, message, "쿠폰 봇 오류", 0x10)
+    except Exception:
+        pass
+
+
+def _make_tray_image() -> Image.Image:
+    """Draw a simple icon at runtime so we don't have to ship an image file."""
+    img = Image.new("RGB", (64, 64), (58, 122, 254))
+    draw = ImageDraw.Draw(img)
+    draw.ellipse((10, 10, 54, 54), outline=(255, 255, 255), width=4)
+    return img
+
+
+def _on_quit(icon: "pystray.Icon", _item) -> None:
+    logger.info("Quit requested from tray.")
+    icon.stop()
+    os._exit(0)
+
+
+def _on_open_log(_icon, _item) -> None:
+    log_path = base_dir() / "bot.log"
+    if log_path.exists():
+        try:
+            os.startfile(str(log_path))  # type: ignore[attr-defined]
+        except Exception:
+            logger.exception("Failed to open log file")
+
+
+def _build_app() -> Application:
     app = Application.builder().token(TOKEN).build()
     app.add_handler(CommandHandler("start", cmd_start))
     app.add_handler(CommandHandler("help", cmd_help))
@@ -358,9 +410,58 @@ def main() -> None:
             handle_excel,
         )
     )
+    return app
 
-    logger.info("Bot starting. Allowed chats: %s", ALLOWED_CHAT_IDS)
-    app.run_polling(allowed_updates=Update.ALL_TYPES)
+
+async def _bot_main() -> None:
+    app = _build_app()
+    await app.initialize()
+    await app.start()
+    await app.updater.start_polling(allowed_updates=Update.ALL_TYPES)
+    logger.info("Bot polling started. Allowed chats: %s", ALLOWED_CHAT_IDS)
+    try:
+        # Keep the loop alive. Tray quit calls os._exit, which kills this too.
+        while True:
+            await asyncio.sleep(3600)
+    finally:
+        try:
+            await app.updater.stop()
+            await app.stop()
+            await app.shutdown()
+        except Exception:
+            logger.exception("Bot shutdown error")
+
+
+def _bot_thread_target() -> None:
+    try:
+        asyncio.run(_bot_main())
+    except Exception:
+        logger.exception("Bot thread crashed")
+
+
+def main() -> None:
+    _setup_logging()
+
+    if not TOKEN:
+        _show_error_box("TELEGRAM_BOT_TOKEN 이 비어있습니다.\n.env 파일을 확인하세요.")
+        raise SystemExit(1)
+    if not ALLOWED_CHAT_IDS:
+        _show_error_box("ALLOWED_CHAT_IDS 가 비어있습니다.\n.env 파일을 확인하세요.")
+        raise SystemExit(1)
+
+    logger.info("Starting tray app...")
+    threading.Thread(target=_bot_thread_target, daemon=True).start()
+
+    icon = pystray.Icon(
+        "soulstrike_coupon_bot",
+        _make_tray_image(),
+        "SoulStrike 쿠폰 봇",
+        menu=pystray.Menu(
+            pystray.MenuItem("로그 열기", _on_open_log),
+            pystray.MenuItem("종료", _on_quit),
+        ),
+    )
+    icon.run()  # Blocks the main thread until icon.stop().
 
 
 if __name__ == "__main__":

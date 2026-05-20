@@ -37,12 +37,14 @@ pip install pyinstaller
 ## 기존 GUI 버전 (Tkinter)
 pyinstaller --noconsole --onefile soulstrike_coupon_auto.py
 
-## 텔레그램 봇 버전 (콘솔 표시 필수 - 창 닫으면 봇도 꺼짐)
+## 텔레그램 봇 버전 (트레이 아이콘 모드 - 콘솔 안 뜸)
 pyinstaller coupon_bot.spec
 ## 결과물: dist\coupon_bot.exe
+## 실행 시 우측 하단 트레이에 파란 아이콘이 생김. 우클릭 → 로그 열기 / 종료.
 
 == 실행오류시 ==
-파워쉘에서 exe 직접 실행해서 오류 내용 확인
+exe를 실행해도 트레이 아이콘이 안 뜨면 dist\bot.log 파일을 확인
+시작 단계 오류(.env 누락 등)는 Windows 메시지박스로 알림
 
 === 다른 PC 배포 시 ===
 
