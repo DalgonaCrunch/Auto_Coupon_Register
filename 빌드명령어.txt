@@ -1,9 +1,35 @@
-파워쉘
+=== Windows PowerShell 에서 실행 ===
 
-# 기존 GUI 버전 (Tkinter)
+## 0. 프로젝트 폴더로 이동
+cd "C:\Users\user\Documents\개발\AI\study\Auto_Coupon_Register"
+
+## 1. PowerShell 실행 정책 임시 허용 (이 창에서만 적용)
+Set-ExecutionPolicy -Scope Process -ExecutionPolicy Bypass
+
+## 2. (최초 1회) venv 만들기
+##    .venv 폴더가 없거나 깨져있을 때만 실행
+python -m venv .venv
+
+## 3. venv 활성화 — 성공하면 프롬프트 앞에 (.venv) 가 붙음
+.\.venv\Scripts\Activate.ps1
+
+## 4. (최초 1회) 의존성 + PyInstaller 설치
+pip install -r requirements.txt
+pip install pyinstaller
+
+
+=== 빌드 ===
+
+## 기존 GUI 버전 (Tkinter)
 pyinstaller --noconsole --onefile soulstrike_coupon_auto.py
 
-# 텔레그램 봇 버전 (콘솔 표시 필수 - 닫으면 봇도 꺼짐)
-pip install pyinstaller
+## 텔레그램 봇 버전 (콘솔 표시 필수 - 창 닫으면 봇도 꺼짐)
 pyinstaller coupon_bot.spec
-# 결과물: dist/coupon_bot.exe
+## 결과물: dist\coupon_bot.exe
+
+
+=== 다른 PC 배포 시 ===
+
+dist\coupon_bot.exe 와 .env 를 같은 폴더에 두고 더블클릭.
+PC에 Chrome 브라우저 설치 필요 (ChromeDriver는 첫 실행 시 자동 다운로드, 인터넷 필요).
+콘솔 창을 닫으면 봇도 꺼지니 닫지 말 것.
