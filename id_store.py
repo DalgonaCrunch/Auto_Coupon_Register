@@ -3,10 +3,11 @@ from __future__ import annotations
 
 import json
 import threading
-from pathlib import Path
+
+from paths import base_dir
 
 _LOCK = threading.Lock()
-_PATH = Path(__file__).resolve().parent / "ids.json"
+_PATH = base_dir() / "ids.json"
 
 
 def _read() -> list[str]:

@@ -1,2 +1,9 @@
 파워쉘
+
+# 기존 GUI 버전 (Tkinter)
 pyinstaller --noconsole --onefile soulstrike_coupon_auto.py
+
+# 텔레그램 봇 버전 (콘솔 표시 필수 - 닫으면 봇도 꺼짐)
+pip install pyinstaller
+pyinstaller coupon_bot.spec
+# 결과물: dist/coupon_bot.exe

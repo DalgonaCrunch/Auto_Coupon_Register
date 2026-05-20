@@ -7,7 +7,6 @@ import logging
 import os
 from collections import Counter
 from functools import wraps
-from pathlib import Path
 
 from dotenv import load_dotenv
 from telegram import Update
@@ -20,8 +19,10 @@ from telegram.ext import (
 
 import coupon_engine
 import id_store
+from paths import base_dir
 
-load_dotenv()
+# Load .env from the directory next to the exe / script, not CWD.
+load_dotenv(dotenv_path=base_dir() / ".env")
 
 logging.basicConfig(
     format="%(asctime)s %(levelname)s %(name)s - %(message)s",
@@ -36,7 +37,7 @@ ALLOWED_CHAT_IDS: set[int] = {
 DEFAULT_SERVER = os.environ.get("DEFAULT_SERVER", "KR/JP/GLB").strip()
 HEADLESS = os.environ.get("HEADLESS", "1").strip() == "1"
 
-STATE_PATH = Path(__file__).resolve().parent / "bot_state.json"
+STATE_PATH = base_dir() / "bot_state.json"
 _run_lock = asyncio.Lock()
 
 

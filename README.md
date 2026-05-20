@@ -54,6 +54,33 @@ ID 목록은 `ids.json`, 서버 설정은 `bot_state.json` 에 저장됩니다 (
 - `id_store.py` — ID JSON 저장소
 - `soulstrike_coupon_auto.py` — 기존 Tkinter/Excel 버전 (보존)
 
+## exe로 빌드 (다른 PC 배포용)
+
+Python 없는 PC에서도 돌리고 싶을 때:
+
+```powershell
+# 봇 개발 환경에서 (PyInstaller 추가 설치)
+pip install pyinstaller
+pyinstaller coupon_bot.spec
+```
+
+빌드가 끝나면 `dist/coupon_bot.exe` 가 생깁니다.
+
+**배포 시 같은 폴더에 둘 파일:**
+
+```
+coupon_bot.exe
+.env              ← 토큰/chat_id 채워서 함께 배포
+```
+
+`ids.json` 과 `bot_state.json` 은 봇이 실행되면서 같은 폴더에 자동 생성됩니다.
+
+**다른 PC에서 실행 전 확인:**
+
+- **Chrome 브라우저 설치 필요** (Selenium이 사용). ChromeDriver는 webdriver-manager가 첫 실행 시 자동으로 받습니다 (인터넷 필요).
+- exe 실행 시 콘솔 창이 뜨고, **그 창을 닫으면 봇도 꺼집니다**. 닫지 마세요.
+- 봇이 24시간 응답하길 원하면 PC도 24시간 켜둬야 합니다. 작업 스케줄러로 부팅 시 자동 실행을 등록할 수도 있습니다.
+
 ## 클라우드 배포 (선택)
 
 PC가 꺼져있어도 봇이 돌아가게 하려면 클라우드로 옮기면 됩니다. 추천:
