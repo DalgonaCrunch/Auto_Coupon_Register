@@ -1,3 +1,16 @@
+** 최초 진행시 토큰으로 chat_id 받기
+1) 텔레그램에서 본인 봇과 대화 시작 (아무 메시지 1개 보내기)
+2) 브라우저 주소창에 아래 URL 입력 (토큰 부분만 본인 것으로 교체)
+   https://api.telegram.org/bot<여기에_토큰_붙여넣기>/getUpdates
+3) 응답 JSON 에서 "chat":{"id": ...} 의 id 숫자가 본인 chat_id
+   예시 응답:
+   "chat": {
+             "id": <본인_chat_id_숫자>,
+             "first_name": "<이름>",
+             "type": "private"
+           }
+4) 이 숫자를 .env 의 ALLOWED_CHAT_IDS 에 넣음
+
 === Windows PowerShell 에서 실행 ===
 
 ## 0. 프로젝트 폴더로 이동
@@ -28,6 +41,8 @@ pyinstaller --noconsole --onefile soulstrike_coupon_auto.py
 pyinstaller coupon_bot.spec
 ## 결과물: dist\coupon_bot.exe
 
+== 실행오류시 ==
+파워쉘에서 exe 직접 실행해서 오류 내용 확인
 
 === 다른 PC 배포 시 ===
 
