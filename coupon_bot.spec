@@ -9,6 +9,7 @@ a = Analysis(
         'telegram',
         'telegram.ext',
         'telegram.constants',
+        'openpyxl',
     ],
     hookspath=[],
     hooksconfig={},

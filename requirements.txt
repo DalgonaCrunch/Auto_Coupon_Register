@@ -2,3 +2,4 @@ python-telegram-bot==21.6
 selenium==4.25.0
 webdriver-manager==4.0.2
 python-dotenv==1.0.1
+openpyxl==3.1.5

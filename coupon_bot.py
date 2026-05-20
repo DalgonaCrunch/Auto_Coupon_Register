@@ -5,6 +5,7 @@ import asyncio
 import json
 import logging
 import os
+import re
 from collections import Counter
 from functools import wraps
 
@@ -15,6 +16,8 @@ from telegram.ext import (
     Application,
     CommandHandler,
     ContextTypes,
+    MessageHandler,
+    filters,
 )
 
 import coupon_engine
@@ -58,6 +61,33 @@ def current_server() -> str:
     return _load_state().get("server", DEFAULT_SERVER)
 
 
+def _parse_args(message_text: str | None) -> list[str]:
+    """Split the args of a /command message by whitespace, commas, and newlines.
+
+    Drops the leading /command (or /command@botname) token. Dedupes while
+    preserving order. Lets users paste many IDs/codes at once in any format:
+
+        /add user1 user2,user3
+        /add
+        user1
+        user2, user3
+    """
+    if not message_text:
+        return []
+    parts = message_text.split(None, 1)
+    if len(parts) < 2:
+        return []
+    tokens = re.split(r"[,\s]+", parts[1])
+    seen: set[str] = set()
+    out: list[str] = []
+    for t in tokens:
+        t = t.strip()
+        if t and t not in seen:
+            out.append(t)
+            seen.add(t)
+    return out
+
+
 def authorized(handler):
     @wraps(handler)
     async def wrapper(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -91,7 +121,13 @@ async def cmd_help(update: Update, _: ContextTypes.DEFAULT_TYPE) -> None:
         "`/list` — 등록된 ID 목록\n"
         "`/server <KR/JP/GLB>` — 기본 서버 변경 (현재: "
         f"{current_server()})\n"
-        "`/help` — 도움말"
+        "`/help` — 도움말\n"
+        "\n"
+        "*여러 개 한 번에:* 공백/콤마/줄바꿈 모두 구분자로 가능\n"
+        "예) `/add user1 user2,user3` 또는 줄바꿈으로\n"
+        "\n"
+        "*엑셀 일괄 등록:* .xlsx 파일을 채팅에 첨부하면 A열 2행부터 ID로 추가합니다 "
+        "(1행은 헤더, 기존 엑셀 포맷 그대로)"
     )
     await update.message.reply_text(text, parse_mode=ParseMode.MARKDOWN)
 
@@ -107,11 +143,14 @@ async def cmd_list(update: Update, _: ContextTypes.DEFAULT_TYPE) -> None:
 
 
 @authorized
-async def cmd_add(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    if not context.args:
-        await update.message.reply_text("사용법: /add <ID> [ID ...]")
+async def cmd_add(update: Update, _: ContextTypes.DEFAULT_TYPE) -> None:
+    items = _parse_args(update.message.text)
+    if not items:
+        await update.message.reply_text(
+            "사용법: /add <ID> [ID ...]\n공백/콤마/줄바꿈 모두 구분자로 사용 가능."
+        )
         return
-    added, dupes = id_store.add_ids(list(context.args))
+    added, dupes = id_store.add_ids(items)
     lines = []
     if added:
         lines.append(f"추가됨 ({len(added)}): {', '.join(added)}")
@@ -123,11 +162,12 @@ async def cmd_add(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
 
 
 @authorized
-async def cmd_del(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    if not context.args:
+async def cmd_del(update: Update, _: ContextTypes.DEFAULT_TYPE) -> None:
+    items = _parse_args(update.message.text)
+    if not items:
         await update.message.reply_text("사용법: /del <ID> [ID ...]")
         return
-    removed, missing = id_store.remove_ids(list(context.args))
+    removed, missing = id_store.remove_ids(items)
     lines = []
     if removed:
         lines.append(f"삭제됨 ({len(removed)}): {', '.join(removed)}")
@@ -153,45 +193,40 @@ async def cmd_server(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
 
 
 @authorized
-async def cmd_coupon(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    if not context.args:
-        await update.message.reply_text("사용법: /coupon <코드> [코드 ...]")
+async def cmd_coupon(update: Update, _: ContextTypes.DEFAULT_TYPE) -> None:
+    coupons = _parse_args(update.message.text)
+    if not coupons:
+        await update.message.reply_text(
+            "사용법: /coupon <코드> [코드 ...]\n공백/콤마/줄바꿈 모두 가능."
+        )
         return
-    coupons = [c.strip() for c in context.args if c.strip()]
     ids = id_store.list_ids()
     if not ids:
-        await update.message.reply_text("등록된 ID가 없습니다. /add 로 먼저 추가하세요.")
+        await update.message.reply_text(
+            "등록된 ID가 없습니다. /add 또는 .xlsx 파일 업로드로 먼저 추가하세요."
+        )
         return
 
     if _run_lock.locked():
-        await update.message.reply_text("이미 다른 등록 작업이 진행 중입니다. 잠시 후 다시 시도하세요.")
+        await update.message.reply_text(
+            "이미 다른 등록 작업이 진행 중입니다. 잠시 후 다시 시도하세요."
+        )
         return
 
     server = current_server()
-    progress_msg = await update.message.reply_text(
-        f"시작합니다.\nID {len(ids)}개 × 쿠폰 {len(coupons)}개 = {len(ids) * len(coupons)}건\n서버: {server}"
+    total = len(ids) * len(coupons)
+    await update.message.reply_text(
+        f"시작합니다. ID {len(ids)}개 × 쿠폰 {len(coupons)}개 = {total}건\n"
+        f"서버: {server}\n"
+        f"처리가 끝나면 결과를 한 번에 정리해서 보내드립니다."
     )
 
+    def log_progress(line: str) -> None:
+        # Console-only progress (no Telegram spam). Useful when watching the
+        # bot window during a long run.
+        logger.info("[run] %s", line)
+
     async with _run_lock:
-        loop = asyncio.get_running_loop()
-        queue: asyncio.Queue[str] = asyncio.Queue()
-
-        def on_progress(line: str) -> None:
-            # Called from the Selenium worker thread; hand off to the event loop.
-            asyncio.run_coroutine_threadsafe(queue.put(line), loop)
-
-        async def drain_progress() -> None:
-            while True:
-                line = await queue.get()
-                if line == "__DONE__":
-                    return
-                try:
-                    await update.message.reply_text(line)
-                except Exception:
-                    logger.exception("progress reply failed")
-
-        drainer = asyncio.create_task(drain_progress())
-
         try:
             results = await asyncio.to_thread(
                 coupon_engine.register_coupons,
@@ -199,35 +234,105 @@ async def cmd_coupon(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
                 coupons,
                 server,
                 HEADLESS,
-                on_progress,
+                log_progress,
             )
         except Exception as e:
-            await queue.put("__DONE__")
-            await drainer
             logger.exception("coupon run failed")
             await update.message.reply_text(f"실패: {e}")
             return
 
-        await queue.put("__DONE__")
-        await drainer
+    await update.message.reply_text(
+        _format_summary(results), parse_mode=ParseMode.MARKDOWN
+    )
 
-    summary = _format_summary(results)
-    await update.message.reply_text(summary, parse_mode=ParseMode.MARKDOWN)
+
+@authorized
+async def handle_excel(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Receive an .xlsx file and bulk-add IDs from column A (row 2 onward).
+
+    Matches the format the legacy Tkinter app used so users can keep their
+    existing spreadsheets.
+    """
+    doc = update.message.document
+    if doc is None:
+        return
+    name = (doc.file_name or "").lower()
+    if not name.endswith((".xlsx", ".xlsm")):
+        await update.message.reply_text("엑셀 파일(.xlsx)만 처리합니다.")
+        return
+
+    tmp_path = base_dir() / "_tmp_upload.xlsx"
+    try:
+        tg_file = await context.bot.get_file(doc.file_id)
+        await tg_file.download_to_drive(custom_path=str(tmp_path))
+    except Exception as e:
+        await update.message.reply_text(f"파일 다운로드 실패: {e}")
+        return
+
+    try:
+        from openpyxl import load_workbook
+
+        wb = load_workbook(tmp_path, read_only=True, data_only=True)
+        ws = wb.active
+        ids = [
+            str(row[0].value).strip()
+            for row in ws.iter_rows(min_row=2)
+            if row and row[0].value is not None and str(row[0].value).strip()
+        ]
+        wb.close()
+    except Exception as e:
+        logger.exception("excel parse failed")
+        await update.message.reply_text(f"엑셀 읽기 실패: {e}")
+        return
+    finally:
+        try:
+            tmp_path.unlink(missing_ok=True)
+        except Exception:
+            pass
+
+    if not ids:
+        await update.message.reply_text(
+            "엑셀에서 ID를 찾지 못했습니다. A열 2행부터 ID를 채워주세요 (1행은 헤더)."
+        )
+        return
+
+    added, dupes = id_store.add_ids(ids)
+    preview = lambda xs: ", ".join(xs[:20]) + (f" 외 {len(xs) - 20}개" if len(xs) > 20 else "")
+    lines = [f"엑셀에서 {len(ids)}건 인식"]
+    if added:
+        lines.append(f"추가됨 ({len(added)}): {preview(added)}")
+    if dupes:
+        lines.append(f"이미 있음 ({len(dupes)}): {preview(dupes)}")
+    await update.message.reply_text("\n".join(lines))
 
 
 def _format_summary(results: list[coupon_engine.CouponResult]) -> str:
     total = len(results)
-    ok = sum(1 for r in results if r.ok)
-    fail = total - ok
+    ok_n = sum(1 for r in results if r.ok)
+    fail_n = total - ok_n
 
-    per_id_status: dict[str, Counter] = {}
+    success_by_id: dict[str, Counter] = {}
+    failure_by_id: dict[str, Counter] = {}
     for r in results:
-        per_id_status.setdefault(r.user_id, Counter())[r.message] += 1
+        bucket = success_by_id if r.ok else failure_by_id
+        bucket.setdefault(r.user_id, Counter())[r.message] += 1
 
-    lines = [f"*완료* — 성공 {ok} / 실패 {fail} / 총 {total}"]
-    for uid, counter in per_id_status.items():
-        parts = ", ".join(f"{msg}×{n}" for msg, n in counter.items())
-        lines.append(f"• `{uid}` — {parts}")
+    lines = [f"*완료* — 성공 {ok_n} / 실패 {fail_n} / 총 {total}"]
+
+    if success_by_id:
+        lines.append("")
+        lines.append("✅ *성공*")
+        for uid, counter in success_by_id.items():
+            parts = ", ".join(f"{msg}×{n}" for msg, n in counter.items())
+            lines.append(f"• `{uid}` — {parts}")
+
+    if failure_by_id:
+        lines.append("")
+        lines.append("❌ *실패*")
+        for uid, counter in failure_by_id.items():
+            parts = ", ".join(f"{msg}×{n}" for msg, n in counter.items())
+            lines.append(f"• `{uid}` — {parts}")
+
     return "\n".join(lines)
 
 
@@ -245,6 +350,14 @@ def main() -> None:
     app.add_handler(CommandHandler("del", cmd_del))
     app.add_handler(CommandHandler("server", cmd_server))
     app.add_handler(CommandHandler("coupon", cmd_coupon))
+    # Accept .xlsx attachments for bulk ID import.
+    app.add_handler(
+        MessageHandler(
+            filters.Document.FileExtension("xlsx")
+            | filters.Document.FileExtension("xlsm"),
+            handle_excel,
+        )
+    )
 
     logger.info("Bot starting. Allowed chats: %s", ALLOWED_CHAT_IDS)
     app.run_polling(allowed_updates=Update.ALL_TYPES)
