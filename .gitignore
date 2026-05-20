@@ -144,6 +144,10 @@ ENV/
 env.bak/
 venv.bak/
 
+# Bot runtime data
+ids.json
+bot_state.json
+
 # Spyder project settings
 .spyderproject
 .spyproject
