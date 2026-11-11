@@ -1,5 +1,7 @@
 # SoulStrike 쿠폰 텔레그램 봇
 
+> 🌐 **웹 버전(PC 불필요)은 [`web/`](web/README.md) 폴더** — https://soulstrike-coupon.vercel.app
+
 기존 Tkinter + Excel 기반 자동등록기를 **텔레그램 봇**으로 옮긴 버전. 봇이 켜져 있는 한 어디서든 텔레그램으로 명령어를 보내면 등록된 ID들에 쿠폰을 자동 등록합니다.
 
 ## 설치
