@@ -19,9 +19,12 @@ PC를 켜 둘 필요 없는 웹페이지 버전. 쿠폰 코드를 넣으면 등�
 
 ## 배포
 
+GitHub `main` 에 push 하면 Vercel 이 자동 배포한다 (프로젝트 `soulstrike-coupon`, Root Directory = `web`).
+`web/` 밖만 바뀐 커밋은 배포를 건너뛴다 (Ignored Build Step: `git diff --quiet HEAD^ HEAD -- .`).
+
+처음 설정할 때만:
+
 ```bash
-cd web
-vercel link --project soulstrike-coupon
-vercel env add PAGE_PASSWORD production
-vercel deploy --prod
+vercel env add PAGE_PASSWORD production   # 페이지 비밀번호
+vercel integration add upstash/upstash-kv # KV_REST_API_URL / KV_REST_API_TOKEN 자동 등록
 ```
