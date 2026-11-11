@@ -1,0 +1,262 @@
+"""Vercel serverless API for the SoulStrike coupon page.
+
+Routes (all require the X-Password header to match PAGE_PASSWORD):
+  GET  /api/state            -> {"ids": [...], "server": "...", "servers": [...]}
+  POST /api/ids    {"add": [...]} | {"remove": [...]}
+  POST /api/server {"server": "KR/JP/GLB"}
+  POST /api/coupon {"coupon": "CODE"}  -> registers CODE for every saved ID
+
+Coupon registration talks to the coupon site's own endpoint
+(POST /tp/coupon/use) instead of driving Chrome. The page-scoped keys that
+endpoint needs are read from the coupon page HTML on every run.
+"""
+from __future__ import annotations
+
+import hmac
+import http.cookiejar
+import json
+import os
+import re
+import time
+import urllib.parse
+import urllib.request
+from http.server import BaseHTTPRequestHandler
+
+COUPON_BASE = "https://coupon.withhive.com"
+COUPON_PAGE = COUPON_BASE + "/soulstrike"
+UA = (
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+    "(KHTML, like Gecko) Chrome/130.0 Safari/537.36"
+)
+SUCCESS_CODES = {"100"}
+DEFAULT_SERVER = os.environ.get("DEFAULT_SERVER", "KR/JP/GLB").strip()
+SLEEP_SEC = 0.3
+
+
+# ---------------------------------------------------------------- storage ---
+def _redis_conf() -> tuple[str, str]:
+    url = os.environ.get("KV_REST_API_URL") or os.environ.get("UPSTASH_REDIS_REST_URL") or ""
+    token = os.environ.get("KV_REST_API_TOKEN") or os.environ.get("UPSTASH_REDIS_REST_TOKEN") or ""
+    if not url or not token:
+        raise RuntimeError("Redis 환경변수가 없습니다 (KV_REST_API_URL / KV_REST_API_TOKEN).")
+    return url.rstrip("/"), token
+
+
+def _redis(*cmd: str):
+    url, token = _redis_conf()
+    req = urllib.request.Request(
+        url,
+        data=json.dumps(list(cmd)).encode(),
+        headers={"Authorization": f"Bearer {token}", "Content-Type": "application/json"},
+        method="POST",
+    )
+    with urllib.request.urlopen(req, timeout=10) as r:
+        body = json.loads(r.read().decode())
+    if "error" in body:
+        raise RuntimeError(f"Redis 오류: {body['error']}")
+    return body.get("result")
+
+
+def load_ids() -> list[str]:
+    raw = _redis("GET", "coupon:ids")
+    if not raw:
+        return []
+    try:
+        data = json.loads(raw)
+    except json.JSONDecodeError:
+        return []
+    return [str(x) for x in data] if isinstance(data, list) else []
+
+
+def save_ids(ids: list[str]) -> None:
+    _redis("SET", "coupon:ids", json.dumps(ids, ensure_ascii=False))
+
+
+def load_server() -> str:
+    return _redis("GET", "coupon:server") or DEFAULT_SERVER
+
+
+def save_server(server: str) -> None:
+    _redis("SET", "coupon:server", server)
+
+
+def clean_items(items) -> list[str]:
+    out: list[str] = []
+    seen: set[str] = set()
+    for raw in items or []:
+        for t in re.split(r"[,\s]+", str(raw)):
+            t = t.strip()
+            if t and t not in seen:
+                out.append(t)
+                seen.add(t)
+    return out
+
+
+# ----------------------------------------------------------------- engine ---
+class CouponSite:
+    """One browsing session against the coupon page: cookies + page keys."""
+
+    def __init__(self) -> None:
+        self.opener = urllib.request.build_opener(
+            urllib.request.HTTPCookieProcessor(http.cookiejar.CookieJar())
+        )
+        html = self._get(COUPON_PAGE)
+        self.page_key = self._grab(html, r"'Page-Key':\s*'([^']*)'")
+        self.ct_key = self._grab(html, r"'CT-Key':\s*'([^']*)'", required=False)
+        self.page_token = self._grab(html, r"'Coupon-Page-Token':\s*'([^']*)'")
+        m = re.search(r"var gParam = (\{.*?\});\s*\n", html, re.S)
+        if not m:
+            raise RuntimeError("쿠폰 페이지 구조가 바뀌었습니다 (gParam 없음).")
+        gparam = json.loads(m.group(1))
+        self.game_index = gparam["gameInfo"]["gameindex"]
+        self.worlds = gparam.get("gameWorldList") or []
+
+    def _get(self, url: str) -> str:
+        req = urllib.request.Request(url, headers={"User-Agent": UA, "Accept-Language": "ko"})
+        with self.opener.open(req, timeout=15) as r:
+            return r.read().decode("utf-8", "replace")
+
+    @staticmethod
+    def _grab(html: str, pattern: str, required: bool = True) -> str:
+        m = re.search(pattern, html)
+        if not m:
+            if required:
+                raise RuntimeError("쿠폰 페이지 구조가 바뀌었습니다 (키 없음).")
+            return ""
+        return m.group(1)
+
+    def server_names(self) -> list[str]:
+        return [w.get("display_world_title_ko") or w.get("name") for w in self.worlds]
+
+    def server_value(self, server: str) -> str:
+        want = server.strip().lower()
+        for w in self.worlds:
+            names = {
+                str(w.get("name") or "").lower(),
+                str(w.get("display_world_title_ko") or "").lower(),
+                str(w.get("display_world_title_en") or "").lower(),
+            }
+            if want in names:
+                title = w.get("display_world_title_ko") or w.get("name")
+                return f"{self.game_index}|{w.get('name')}|{title}"
+        raise RuntimeError(f"서버 '{server}'을(를) 찾지 못했습니다. 가능: {', '.join(self.server_names())}")
+
+    def use(self, server_value: str, cs_code: str, coupon: str) -> tuple[bool, str, str]:
+        body = {
+            "language": "ko",
+            "server": server_value,
+            "cs_code": re.sub(r"[^0-9]", "", cs_code),
+            "coupon": coupon.strip(),
+        }
+        req = urllib.request.Request(
+            COUPON_BASE + "/tp/coupon/use",
+            data=json.dumps(body).encode(),
+            headers={
+                "User-Agent": UA,
+                "Content-Type": "application/json",
+                "Origin": COUPON_BASE,
+                "Referer": COUPON_PAGE,
+                "Page-Key": self.page_key,
+                "CT-Key": self.ct_key,
+                "Coupon-Page-Token": self.page_token,
+            },
+            method="POST",
+        )
+        try:
+            with self.opener.open(req, timeout=15) as r:
+                res = json.loads(r.read().decode("utf-8", "replace"))
+        except Exception as e:  # network / HTTP error
+            return False, "", f"요청 실패: {e}"
+        code = str(res.get("code", ""))
+        msg = re.sub(r"<br\s*/?>", " ", str(res.get("msg") or res.get("message") or ""))
+        return code in SUCCESS_CODES, code, msg
+
+
+def register_all(coupon: str, ids: list[str], server: str) -> list[dict]:
+    site = CouponSite()
+    server_value = site.server_value(server)
+    results = []
+    for i, cs in enumerate(ids):
+        if i:
+            time.sleep(SLEEP_SEC)
+        ok, code, msg = site.use(server_value, cs, coupon)
+        results.append({"id": cs, "coupon": coupon, "ok": ok, "code": code, "msg": msg})
+    return results
+
+
+# ---------------------------------------------------------------- handler ---
+class handler(BaseHTTPRequestHandler):
+    def _send(self, status: int, payload: dict) -> None:
+        data = json.dumps(payload, ensure_ascii=False).encode()
+        self.send_response(status)
+        self.send_header("Content-Type", "application/json; charset=utf-8")
+        self.send_header("Cache-Control", "no-store")
+        self.send_header("Content-Length", str(len(data)))
+        self.end_headers()
+        self.wfile.write(data)
+
+    def _authorized(self) -> bool:
+        expected = os.environ.get("PAGE_PASSWORD", "")
+        given = urllib.parse.unquote(self.headers.get("X-Password", ""))
+        return bool(expected) and hmac.compare_digest(given.encode(), expected.encode())
+
+    def _route(self) -> str:
+        return urllib.parse.urlparse(self.path).path.rstrip("/").rsplit("/", 1)[-1]
+
+    def _body(self) -> dict:
+        n = int(self.headers.get("Content-Length") or 0)
+        if not n:
+            return {}
+        try:
+            return json.loads(self.rfile.read(n).decode())
+        except Exception:
+            return {}
+
+    def do_GET(self) -> None:
+        if not self._authorized():
+            return self._send(401, {"error": "비밀번호가 틀렸습니다."})
+        try:
+            if self._route() == "state":
+                return self._send(200, {"ids": load_ids(), "server": load_server()})
+            if self._route() == "servers":
+                return self._send(200, {"servers": CouponSite().server_names()})
+            return self._send(404, {"error": "not found"})
+        except Exception as e:
+            return self._send(500, {"error": str(e)})
+
+    def do_POST(self) -> None:
+        if not self._authorized():
+            return self._send(401, {"error": "비밀번호가 틀렸습니다."})
+        route, body = self._route(), self._body()
+        try:
+            if route == "ids":
+                ids = load_ids()
+                if "add" in body:
+                    new = [x for x in clean_items(body["add"]) if x not in ids]
+                    dupes = [x for x in clean_items(body["add"]) if x in ids]
+                    save_ids(ids + new)
+                    return self._send(200, {"added": new, "dupes": dupes, "ids": ids + new})
+                if "remove" in body:
+                    rm = set(clean_items(body["remove"]))
+                    kept = [x for x in ids if x not in rm]
+                    save_ids(kept)
+                    return self._send(200, {"removed": sorted(rm & set(ids)), "ids": kept})
+                return self._send(400, {"error": "add 또는 remove 가 필요합니다."})
+            if route == "server":
+                server = str(body.get("server") or "").strip()
+                if not server:
+                    return self._send(400, {"error": "server 가 필요합니다."})
+                CouponSite().server_value(server)  # validate against live list
+                save_server(server)
+                return self._send(200, {"server": server})
+            if route == "coupon":
+                coupon = str(body.get("coupon") or "").strip()
+                if not coupon:
+                    return self._send(400, {"error": "쿠폰 코드가 필요합니다."})
+                ids = load_ids()
+                if not ids:
+                    return self._send(400, {"error": "등록된 ID가 없습니다."})
+                return self._send(200, {"results": register_all(coupon, ids, load_server())})
+            return self._send(404, {"error": "not found"})
+        except Exception as e:
+            return self._send(500, {"error": str(e)})

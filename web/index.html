@@ -1,0 +1,217 @@
+<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<meta name="robots" content="noindex, nofollow" />
+<title>소울스트라이크 쿠폰 등록</title>
+<style>
+  :root {
+    --bg: #f4f5f7; --card: #fff; --text: #1d2330; --muted: #6b7385;
+    --line: #e2e5eb; --accent: #3a7afe; --ok: #1f9d55; --bad: #d64545;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root { --bg: #14161b; --card: #1d2027; --text: #e8eaf0; --muted: #9aa1b2;
+            --line: #2d313a; --accent: #5b8fff; --ok: #3fbf74; --bad: #ef6b6b; }
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--bg); color: var(--text);
+         font: 15px/1.5 -apple-system, "Segoe UI", "Apple SD Gothic Neo", "Malgun Gothic", sans-serif; }
+  main { max-width: 640px; margin: 0 auto; padding: 24px 16px 48px; }
+  h1 { font-size: 20px; margin: 0 0 16px; }
+  h2 { font-size: 15px; margin: 0 0 10px; }
+  .card { background: var(--card); border: 1px solid var(--line); border-radius: 12px;
+          padding: 16px; margin-bottom: 14px; }
+  textarea, input, select { width: 100%; font: inherit; color: inherit; background: transparent;
+          border: 1px solid var(--line); border-radius: 8px; padding: 10px; }
+  textarea { min-height: 72px; resize: vertical; }
+  button { font: inherit; border: 0; border-radius: 8px; padding: 10px 14px; cursor: pointer;
+           background: var(--accent); color: #fff; font-weight: 600; }
+  button.ghost { background: transparent; color: var(--muted); border: 1px solid var(--line); font-weight: 500; }
+  button:disabled { opacity: .5; cursor: default; }
+  .row { display: flex; gap: 8px; margin-top: 8px; flex-wrap: wrap; }
+  .row > * { flex: 1 1 auto; }
+  .muted { color: var(--muted); font-size: 13px; }
+  ul.ids { list-style: none; margin: 8px 0 0; padding: 0; }
+  ul.ids li { display: flex; justify-content: space-between; align-items: center;
+              padding: 6px 0; border-bottom: 1px solid var(--line); font-family: ui-monospace, monospace; }
+  ul.ids li button { padding: 4px 10px; font-size: 13px; }
+  .res { margin-top: 10px; font-size: 14px; }
+  .res div { padding: 4px 0; border-bottom: 1px solid var(--line); word-break: break-all; }
+  .ok { color: var(--ok); } .bad { color: var(--bad); }
+  .hidden { display: none; }
+  label.file { display: inline-block; }
+</style>
+</head>
+<body>
+<main>
+  <h1>소울스트라이크 쿠폰 등록</h1>
+
+  <section id="login" class="card">
+    <h2>비밀번호</h2>
+    <form id="loginForm" class="row">
+      <input id="pw" type="password" autocomplete="current-password" placeholder="비밀번호" />
+      <button type="submit" style="flex:0 0 auto">들어가기</button>
+    </form>
+    <p id="loginMsg" class="muted"></p>
+  </section>
+
+  <div id="app" class="hidden">
+    <section class="card">
+      <h2>쿠폰 등록</h2>
+      <textarea id="coupons" placeholder="쿠폰 코드 (여러 개는 줄바꿈·공백·콤마로 구분)"></textarea>
+      <div class="row"><button id="runBtn">등록된 모든 ID에 등록</button></div>
+      <p id="runMsg" class="muted"></p>
+      <div id="results" class="res"></div>
+    </section>
+
+    <section class="card">
+      <h2>등록된 ID <span id="idCount" class="muted"></span></h2>
+      <ul id="idList" class="ids"></ul>
+      <textarea id="newIds" placeholder="추가할 CS 코드 (여러 개 가능)" style="margin-top:10px"></textarea>
+      <div class="row">
+        <button id="addBtn">추가</button>
+        <label class="file"><button type="button" class="ghost" id="xlsxBtn">엑셀로 추가</button></label>
+        <input id="xlsx" type="file" accept=".xlsx,.xlsm" class="hidden" />
+      </div>
+      <p class="muted">엑셀은 A열 2행부터 ID로 읽습니다 (1행은 헤더).</p>
+      <p id="idMsg" class="muted"></p>
+    </section>
+
+    <section class="card">
+      <h2>서버</h2>
+      <div class="row">
+        <select id="server"></select>
+        <button id="serverBtn" class="ghost" style="flex:0 0 auto">변경</button>
+      </div>
+      <p id="serverMsg" class="muted"></p>
+    </section>
+
+    <button id="logout" class="ghost">로그아웃</button>
+  </div>
+</main>
+
+<script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
+<script>
+const $ = (id) => document.getElementById(id);
+const store = {
+  get() { try { return localStorage.getItem("pw") || ""; } catch { return ""; } },
+  set(v) { try { localStorage.setItem("pw", v); } catch {} },
+  clear() { try { localStorage.removeItem("pw"); } catch {} },
+};
+let pw = store.get();
+
+async function api(path, body) {
+  const res = await fetch("/api/" + path, {
+    method: body ? "POST" : "GET",
+    headers: { "Content-Type": "application/json", "X-Password": encodeURIComponent(pw) },
+    body: body ? JSON.stringify(body) : undefined,
+  });
+  let data = {};
+  try { data = await res.json(); } catch {}
+  if (res.status === 401) { showLogin(data.error || "비밀번호가 틀렸습니다."); throw new Error("unauthorized"); }
+  if (!res.ok) throw new Error(data.error || ("오류 " + res.status));
+  return data;
+}
+
+const split = (s) => [...new Set(s.split(/[\s,]+/).map((x) => x.trim()).filter(Boolean))];
+const esc = (s) => String(s).replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
+
+function showLogin(msg) {
+  store.clear(); pw = "";
+  $("app").classList.add("hidden"); $("login").classList.remove("hidden");
+  $("loginMsg").textContent = msg || "";
+}
+
+function renderIds(ids) {
+  $("idCount").textContent = `(${ids.length}개)`;
+  $("idList").innerHTML = ids.length
+    ? ids.map((id) => `<li><span>${esc(id)}</span><button class="ghost" data-id="${esc(id)}">삭제</button></li>`).join("")
+    : `<li class="muted">등록된 ID가 없습니다.</li>`;
+}
+
+async function loadAll() {
+  const st = await api("state");
+  $("login").classList.add("hidden"); $("app").classList.remove("hidden");
+  renderIds(st.ids);
+  const sel = $("server");
+  sel.innerHTML = `<option>${esc(st.server)}</option>`;
+  try {
+    const { servers } = await api("servers");
+    sel.innerHTML = servers.map((s) => `<option ${s === st.server ? "selected" : ""}>${esc(s)}</option>`).join("");
+  } catch (e) { $("serverMsg").textContent = "서버 목록을 못 불러왔습니다: " + e.message; }
+}
+
+$("loginForm").onsubmit = async (e) => {
+  e.preventDefault();
+  pw = $("pw").value; store.set(pw);
+  try { await loadAll(); $("loginMsg").textContent = ""; } catch (err) {
+    if (err.message !== "unauthorized") $("loginMsg").textContent = err.message;
+  }
+};
+$("logout").onclick = () => showLogin("");
+
+$("runBtn").onclick = async () => {
+  const codes = split($("coupons").value);
+  if (!codes.length) { $("runMsg").textContent = "쿠폰 코드를 입력하세요."; return; }
+  $("runBtn").disabled = true; $("results").innerHTML = "";
+  let ok = 0, bad = 0;
+  for (const [i, code] of codes.entries()) {
+    $("runMsg").textContent = `진행 중… (${i + 1}/${codes.length}) ${code}`;
+    try {
+      const { results } = await api("coupon", { coupon: code });
+      for (const r of results) {
+        r.ok ? ok++ : bad++;
+        $("results").insertAdjacentHTML("beforeend",
+          `<div class="${r.ok ? "ok" : "bad"}">${r.ok ? "✅" : "❌"} <b>${esc(r.id)}</b> · ${esc(r.coupon)} — ${esc(r.msg || r.code)}</div>`);
+      }
+    } catch (e) {
+      if (e.message === "unauthorized") break;
+      bad++;
+      $("results").insertAdjacentHTML("beforeend", `<div class="bad">❌ ${esc(code)} — ${esc(e.message)}</div>`);
+    }
+  }
+  $("runMsg").textContent = `완료 — 성공 ${ok} / 실패 ${bad}`;
+  $("runBtn").disabled = false;
+};
+
+async function addIds(list, label) {
+  if (!list.length) { $("idMsg").textContent = "추가할 ID가 없습니다."; return; }
+  const r = await api("ids", { add: list });
+  renderIds(r.ids);
+  $("idMsg").textContent = `${label}추가 ${r.added.length}개` + (r.dupes.length ? `, 이미 있음 ${r.dupes.length}개` : "");
+}
+
+$("addBtn").onclick = async () => {
+  try { await addIds(split($("newIds").value), ""); $("newIds").value = ""; }
+  catch (e) { if (e.message !== "unauthorized") $("idMsg").textContent = e.message; }
+};
+
+$("idList").onclick = async (e) => {
+  const id = e.target.dataset && e.target.dataset.id;
+  if (!id || !confirm(`${id} 를 삭제할까요?`)) return;
+  try { const r = await api("ids", { remove: [id] }); renderIds(r.ids); $("idMsg").textContent = `${id} 삭제됨`; }
+  catch (err) { if (err.message !== "unauthorized") $("idMsg").textContent = err.message; }
+};
+
+$("xlsxBtn").onclick = () => $("xlsx").click();
+$("xlsx").onchange = async () => {
+  const f = $("xlsx").files[0]; if (!f) return;
+  try {
+    const wb = XLSX.read(await f.arrayBuffer());
+    const rows = XLSX.utils.sheet_to_json(wb.Sheets[wb.SheetNames[0]], { header: 1 });
+    const ids = rows.slice(1).map((r) => (r && r[0] != null ? String(r[0]).trim() : "")).filter(Boolean);
+    await addIds([...new Set(ids)], `엑셀 ${ids.length}건 인식 → `);
+  } catch (e) { if (e.message !== "unauthorized") $("idMsg").textContent = "엑셀 읽기 실패: " + e.message; }
+  $("xlsx").value = "";
+};
+
+$("serverBtn").onclick = async () => {
+  try { const r = await api("server", { server: $("server").value }); $("serverMsg").textContent = `서버: ${r.server} 로 변경됨`; }
+  catch (e) { if (e.message !== "unauthorized") $("serverMsg").textContent = e.message; }
+};
+
+if (pw) loadAll().catch((e) => { if (e.message !== "unauthorized") showLogin(e.message); });
+</script>
+</body>
+</html>
