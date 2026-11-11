@@ -28,7 +28,7 @@ UA = (
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
     "(KHTML, like Gecko) Chrome/130.0 Safari/537.36"
 )
-SUCCESS_CODES = {"100"}
+SUCCESS_CODES = {"100", "101"}  # 101 = "쿠폰 사용이 완료 되었습니다"
 DEFAULT_SERVER = os.environ.get("DEFAULT_SERVER", "KR/JP/GLB").strip()
 SLEEP_SEC = 0.3
 
@@ -169,7 +169,8 @@ class CouponSite:
             return False, "", f"요청 실패: {e}"
         code = str(res.get("code", ""))
         msg = re.sub(r"<br\s*/?>", " ", str(res.get("msg") or res.get("message") or ""))
-        return code in SUCCESS_CODES, code, msg
+        ok = code in SUCCESS_CODES or "사용이 완료" in msg
+        return ok, code, msg
 
 
 def register_all(coupon: str, ids: list[str], server: str) -> list[dict]:
