@@ -345,7 +345,7 @@ class handler(BaseHTTPRequestHandler):
                     return self._send(400, {"error": "쿠폰 코드가 필요합니다."})
                 ids = load_ids()
                 if not ids:
-                    return self._send(400, {"error": "등록된 ID가 없습니다."})
+                    return self._send(400, {"error": "등록된 CS 코드가 없습니다."})
                 return self._send(200, {"results": register_all(coupon, ids, load_server(), load_names())})
             return self._send(404, {"error": "not found"})
         except Exception as e:

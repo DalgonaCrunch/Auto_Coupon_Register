@@ -33,13 +33,17 @@
   .row { display: flex; gap: 8px; margin-top: 8px; flex-wrap: wrap; }
   .row > * { flex: 1 1 auto; }
   .muted { color: var(--muted); font-size: 13px; }
-  ul.ids { list-style: none; margin: 8px 0 0; padding: 0; }
-  ul.ids li { display: flex; justify-content: space-between; align-items: center;
-              padding: 6px 0; border-bottom: 1px solid var(--line); font-family: ui-monospace, monospace; }
-  ul.ids li button { padding: 4px 10px; font-size: 13px; }
-  ul.ids li .who { display: flex; gap: 10px; align-items: baseline; min-width: 0; flex-wrap: wrap; }
-  ul.ids li .name { font-family: inherit; font-weight: 600; }
-  ul.ids li .cs { color: var(--muted); }
+  table.ids { width: 100%; border-collapse: collapse; margin-top: 8px; table-layout: fixed; }
+  table.ids th { text-align: left; font-size: 12px; font-weight: 600; color: var(--muted);
+                 padding: 4px 6px; border-bottom: 1px solid var(--line); }
+  table.ids td { padding: 6px; border-bottom: 1px solid var(--line); vertical-align: middle; word-break: break-all; }
+  table.ids th.c-act, table.ids td.c-act { width: 64px; text-align: right; }
+  table.ids td.cs { font-family: ui-monospace, monospace; font-size: 13px; white-space: nowrap; word-break: normal; }
+  table.ids td.name b { font-weight: 600; }
+  table.ids .edit { display: flex; gap: 6px; }
+  table.ids .edit input { padding: 5px 8px; min-width: 0; }
+  table.ids button { padding: 5px 10px; font-size: 13px; flex: 0 0 auto; }
+  table.ids .empty { color: var(--muted); font-size: 13px; }
   .res { margin-top: 10px; font-size: 14px; }
   .res div { padding: 4px 0; border-bottom: 1px solid var(--line); word-break: break-all; }
   .ok { color: var(--ok); } .bad { color: var(--bad); }
@@ -67,14 +71,19 @@
     <section class="card">
       <h2>쿠폰 등록</h2>
       <textarea id="coupons" placeholder="쿠폰 코드 (여러 개는 줄바꿈·공백·콤마로 구분)"></textarea>
-      <div class="row"><button id="runBtn">등록된 모든 ID에 등록</button></div>
+      <div class="row"><button id="runBtn">등록된 모든 계정에 등록</button></div>
       <p id="runMsg" class="muted"></p>
       <div id="results" class="res"></div>
     </section>
 
     <section class="card">
-      <h2>등록된 ID <span id="idCount" class="muted"></span></h2>
-      <ul id="idList" class="ids"></ul>
+      <h2>등록된 계정 <span id="idCount" class="muted"></span></h2>
+      <p id="noNameHint" class="muted hidden"></p>
+      <table class="ids">
+        <colgroup><col /><col style="width:118px" /><col class="c-act" /></colgroup>
+        <thead><tr><th>아이디</th><th>CS 코드</th><th class="c-act"></th></tr></thead>
+        <tbody id="idList"></tbody>
+      </table>
       <textarea id="newIds" placeholder="한 줄에 하나: 아이디 CS코드 (예: 홍길동 12345678901)&#10;CS 코드만 써도 됩니다. 아이디가 없는 CS 코드에는 아이디를 붙일 수 있습니다." style="margin-top:10px"></textarea>
       <div class="row">
         <button id="addBtn">추가</button>
@@ -127,7 +136,7 @@ const adminStore = {
 };
 let adminPw = adminStore.get();
 function setAdmin(on, msg) {
-  if (!on) { adminPw = ""; adminStore.clear(); }
+  if (!on) { adminPw = ""; adminStore.clear(); if (editing.size) { editing.clear(); renderIds(lastIds); } }
   document.body.classList.toggle("admin", on);
   $("server").disabled = !on;
   if (msg !== undefined) $("adminMsg").textContent = msg;
@@ -171,12 +180,42 @@ function showLogin(msg) {
   $("loginMsg").textContent = msg || "";
 }
 
+let lastIds = [];
+const editing = new Set();   // 관리자가 "수정"을 누른 CS 코드
+function nameCell(id) {
+  const nm = names[id];
+  if (!nm || editing.has(id)) {
+    return `<div class="edit"><input data-name="${esc(id)}" value="${esc(nm || "")}" placeholder="아이디" maxlength="40" />`
+      + `<button data-save="${esc(id)}">저장</button>`
+      + (nm ? `<button class="ghost" data-cancel="${esc(id)}">취소</button>` : "") + `</div>`;
+  }
+  return `<b>${esc(nm)}</b> <button class="ghost admin-only" data-edit="${esc(id)}">수정</button>`;
+}
 function renderIds(ids, nm) {
   if (nm) names = nm;
+  lastIds = ids;
+  for (const id of [...editing]) if (!ids.includes(id) || !document.body.classList.contains("admin")) editing.delete(id);
+  const empty = ids.filter((id) => !names[id]).length;
   $("idCount").textContent = `(${ids.length}개)`;
+  $("noNameHint").textContent = `아이디가 빈 계정 ${empty}개 — 칸에 아이디를 쓰고 저장(또는 Enter)하거나, 엑셀/아래 입력칸으로 한꺼번에 넣을 수 있습니다.`;
+  $("noNameHint").classList.toggle("hidden", !empty);
   $("idList").innerHTML = ids.length
-    ? ids.map((id) => `<li><span class="who">${names[id] ? `<span class="name">${esc(names[id])}</span>` : ""}<span class="cs">${esc(id)}</span></span><button class="ghost admin-only" data-id="${esc(id)}">삭제</button></li>`).join("")
-    : `<li class="muted">등록된 ID가 없습니다.</li>`;
+    ? ids.map((id) => `<tr><td class="name">${nameCell(id)}</td><td class="cs">${esc(id)}</td>`
+        + `<td class="c-act"><button class="ghost admin-only" data-id="${esc(id)}">삭제</button></td></tr>`).join("")
+    : `<tr><td colspan="3" class="empty">등록된 계정이 없습니다.</td></tr>`;
+}
+
+async function saveName(id) {
+  const input = document.querySelector(`#idList input[data-name="${CSS.escape(id)}"]`);
+  const name = input ? input.value.trim() : "";
+  if (!name) { $("idMsg").textContent = "아이디를 입력하세요."; input && input.focus(); return; }
+  try {
+    const r = await api("ids", { entries: [{ cs: id, name }] });
+    if (r.locked && r.locked.length) { $("idMsg").textContent = "이미 있는 아이디를 바꾸려면 관리자 모드가 필요합니다."; return; }
+    editing.delete(id);
+    renderIds(r.ids, r.names);
+    $("idMsg").textContent = `${label(id)} 저장됨`;
+  } catch (e) { if (e.message !== "unauthorized") $("idMsg").textContent = e.message; }
 }
 
 async function loadAll() {
@@ -261,8 +300,15 @@ $("addBtn").onclick = async () => {
   catch (e) { if (e.message !== "unauthorized") $("idMsg").textContent = e.message; }
 };
 
+$("idList").onkeydown = (e) => {
+  if (e.key === "Enter" && e.target.dataset && e.target.dataset.name) { e.preventDefault(); saveName(e.target.dataset.name); }
+};
 $("idList").onclick = async (e) => {
-  const id = e.target.dataset && e.target.dataset.id;
+  const d = e.target.dataset || {};
+  if (d.save) return saveName(d.save);
+  if (d.edit) { editing.add(d.edit); renderIds(lastIds); const i = document.querySelector(`#idList input[data-name="${CSS.escape(d.edit)}"]`); i && i.focus(); return; }
+  if (d.cancel) { editing.delete(d.cancel); renderIds(lastIds); return; }
+  const id = d.id;
   if (!id || !confirm(`${label(id)} 를 삭제할까요?`)) return;
   const shown = label(id);
   try { const r = await api("ids", { remove: [id] }); renderIds(r.ids, r.names); $("idMsg").textContent = `${shown} 삭제됨`; }
