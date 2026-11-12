@@ -43,7 +43,10 @@
   .res { margin-top: 10px; font-size: 14px; }
   .res div { padding: 4px 0; border-bottom: 1px solid var(--line); word-break: break-all; }
   .ok { color: var(--ok); } .bad { color: var(--bad); }
-  .hidden { display: none; }
+  .hidden { display: none !important; }
+  body:not(.admin) .admin-only { display: none !important; }
+  body.admin .user-only { display: none !important; }
+  .badge { font-size: 12px; font-weight: 600; color: var(--ok); }
   label.file { display: inline-block; }
 </style>
 </head>
@@ -72,12 +75,13 @@
     <section class="card">
       <h2>등록된 ID <span id="idCount" class="muted"></span></h2>
       <ul id="idList" class="ids"></ul>
-      <textarea id="newIds" placeholder="한 줄에 하나: 아이디 CS코드 (예: 홍길동 12345678901)&#10;CS 코드만 써도 됩니다. 이미 있는 CS 코드에 아이디를 쓰면 아이디가 바뀝니다." style="margin-top:10px"></textarea>
+      <textarea id="newIds" placeholder="한 줄에 하나: 아이디 CS코드 (예: 홍길동 12345678901)&#10;CS 코드만 써도 됩니다. 아이디가 없는 CS 코드에는 아이디를 붙일 수 있습니다." style="margin-top:10px"></textarea>
       <div class="row">
         <button id="addBtn">추가</button>
         <label class="file"><button type="button" class="ghost" id="xlsxBtn">엑셀로 추가</button></label>
         <input id="xlsx" type="file" accept=".xlsx,.xlsm" class="hidden" />
       </div>
+      <p class="muted user-only">삭제와 아이디 변경은 아래 관리자 모드에서 할 수 있습니다.</p>
       <p class="muted">엑셀은 2행부터 A·B열을 읽습니다 (1행은 헤더). 숫자만 있는 칸을 CS 코드로, 다른 칸을 아이디로 봅니다.</p>
       <p id="idMsg" class="muted"></p>
     </section>
@@ -86,9 +90,20 @@
       <h2>서버</h2>
       <div class="row">
         <select id="server"></select>
-        <button id="serverBtn" class="ghost" style="flex:0 0 auto">변경</button>
+        <button id="serverBtn" class="ghost admin-only" style="flex:0 0 auto">변경</button>
       </div>
       <p id="serverMsg" class="muted"></p>
+    </section>
+
+    <section class="card">
+      <h2>관리자 <span class="badge admin-only">● 관리자 모드</span></h2>
+      <form id="adminForm" class="row user-only">
+        <input id="adminPw" type="password" autocomplete="off" placeholder="관리자 비밀번호" />
+        <button type="submit" class="ghost" style="flex:0 0 auto">관리자 모드</button>
+      </form>
+      <p class="muted user-only">삭제, 아이디 변경, 서버 변경에 필요합니다.</p>
+      <div class="row admin-only"><button id="adminOff" class="ghost">관리자 모드 끄기</button></div>
+      <p id="adminMsg" class="muted"></p>
     </section>
 
     <button id="logout" class="ghost">로그아웃</button>
@@ -104,16 +119,31 @@ const store = {
   clear() { try { localStorage.removeItem("pw"); } catch {} },
 };
 let pw = store.get();
+// 관리자 비밀번호는 이 탭에서만 기억한다 (탭을 닫으면 잊음).
+const adminStore = {
+  get() { try { return sessionStorage.getItem("adminPw") || ""; } catch { return ""; } },
+  set(v) { try { sessionStorage.setItem("adminPw", v); } catch {} },
+  clear() { try { sessionStorage.removeItem("adminPw"); } catch {} },
+};
+let adminPw = adminStore.get();
+function setAdmin(on, msg) {
+  if (!on) { adminPw = ""; adminStore.clear(); }
+  document.body.classList.toggle("admin", on);
+  $("server").disabled = !on;
+  if (msg !== undefined) $("adminMsg").textContent = msg;
+}
 
 async function api(path, body) {
   const res = await fetch("/api/" + path, {
     method: body ? "POST" : "GET",
-    headers: { "Content-Type": "application/json", "X-Password": encodeURIComponent(pw) },
+    headers: { "Content-Type": "application/json", "X-Password": encodeURIComponent(pw),
+               ...(adminPw ? { "X-Admin-Password": encodeURIComponent(adminPw) } : {}) },
     body: body ? JSON.stringify(body) : undefined,
   });
   let data = {};
   try { data = await res.json(); } catch {}
   if (res.status === 401) { showLogin(data.error || "비밀번호가 틀렸습니다."); throw new Error("unauthorized"); }
+  if (res.status === 403) setAdmin(false);
   if (!res.ok) throw new Error(data.error || ("오류 " + res.status));
   return data;
 }
@@ -145,7 +175,7 @@ function renderIds(ids, nm) {
   if (nm) names = nm;
   $("idCount").textContent = `(${ids.length}개)`;
   $("idList").innerHTML = ids.length
-    ? ids.map((id) => `<li><span class="who">${names[id] ? `<span class="name">${esc(names[id])}</span>` : ""}<span class="cs">${esc(id)}</span></span><button class="ghost" data-id="${esc(id)}">삭제</button></li>`).join("")
+    ? ids.map((id) => `<li><span class="who">${names[id] ? `<span class="name">${esc(names[id])}</span>` : ""}<span class="cs">${esc(id)}</span></span><button class="ghost admin-only" data-id="${esc(id)}">삭제</button></li>`).join("")
     : `<li class="muted">등록된 ID가 없습니다.</li>`;
 }
 
@@ -159,7 +189,22 @@ async function loadAll() {
     const { servers } = await api("servers");
     sel.innerHTML = servers.map((s) => `<option ${s === st.server ? "selected" : ""}>${esc(s)}</option>`).join("");
   } catch (e) { $("serverMsg").textContent = "서버 목록을 못 불러왔습니다: " + e.message; }
+  const saved = adminPw;
+  setAdmin(false);
+  if (saved) {
+    adminPw = saved;
+    try { await api("admin"); adminStore.set(saved); setAdmin(true, ""); } catch { setAdmin(false, ""); }
+  }
 }
+
+$("adminForm").onsubmit = async (e) => {
+  e.preventDefault();
+  adminPw = $("adminPw").value;
+  if (!adminPw) { $("adminMsg").textContent = "관리자 비밀번호를 입력하세요."; return; }
+  try { await api("admin"); adminStore.set(adminPw); $("adminPw").value = ""; setAdmin(true, ""); }
+  catch (err) { if (err.message !== "unauthorized") setAdmin(false, err.message); }
+};
+$("adminOff").onclick = () => setAdmin(false, "관리자 모드를 껐습니다.");
 
 $("loginForm").onsubmit = async (e) => {
   e.preventDefault();
@@ -168,7 +213,7 @@ $("loginForm").onsubmit = async (e) => {
     if (err.message !== "unauthorized") $("loginMsg").textContent = err.message;
   }
 };
-$("logout").onclick = () => showLogin("");
+$("logout").onclick = () => { setAdmin(false, ""); showLogin(""); };
 
 $("runBtn").onclick = async () => {
   const codes = split($("coupons").value);
@@ -201,7 +246,8 @@ async function addEntries(entries, prefix, bad) {
   renderIds(r.ids, r.names);
   $("idMsg").textContent = `${prefix}추가 ${r.added.length}개`
     + (r.updated.length ? `, 아이디 변경 ${r.updated.length}개` : "")
-    + (r.dupes.length ? `, 이미 있음 ${r.dupes.length}개` : "") + tail;
+    + (r.dupes.length ? `, 이미 있음 ${r.dupes.length}개` : "")
+    + (r.locked && r.locked.length ? `, 아이디 변경은 관리자만 ${r.locked.length}개` : "") + tail;
   return !(bad && bad.length);
 }
 

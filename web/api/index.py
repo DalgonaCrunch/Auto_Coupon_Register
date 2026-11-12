@@ -1,6 +1,9 @@
 """Vercel serverless API for the SoulStrike coupon page.
 
-Routes (all require the X-Password header to match PAGE_PASSWORD):
+Routes (all require the X-Password header to match PAGE_PASSWORD).
+Changing or deleting what already exists also needs X-Admin-Password to match
+ADMIN_PASSWORD; with ADMIN_PASSWORD unset those actions stay locked.
+  GET  /api/admin            -> 200 if the admin password is right, else 403
   GET  /api/state            -> {"ids": [...], "names": {cs: name}, "server": "..."}
   POST /api/ids    {"add": [...]} | {"entries": [{"cs": .., "name": ..}]} | {"remove": [...]}
   POST /api/server {"server": "KR/JP/GLB"}
@@ -105,10 +108,12 @@ def clean_entries(entries) -> list[tuple[str, str]]:
     return list(out.items())
 
 
-def merge_entries(ids: list[str], names: dict[str, str], entries) -> dict:
-    """Add new CS codes, and set/replace names for codes given with one."""
+def merge_entries(ids: list[str], names: dict[str, str], entries, admin: bool = False) -> dict:
+    """Add new CS codes. Setting a name on a code that is already saved counts
+    as an edit: an admin may do it, anyone else gets it back in "locked".
+    (A saved code with no name yet may get its first name without admin.)"""
     ids, names = list(ids), dict(names)
-    added, updated, dupes = [], [], []
+    added, updated, dupes, locked = [], [], [], []
     for cs, name in clean_entries(entries):
         if cs not in ids:
             ids.append(cs)
@@ -116,11 +121,15 @@ def merge_entries(ids: list[str], names: dict[str, str], entries) -> dict:
             if name:
                 names[cs] = name
         elif name and names.get(cs) != name:
-            names[cs] = name
-            updated.append(cs)
+            if admin or not names.get(cs):
+                names[cs] = name
+                updated.append(cs)
+            else:
+                locked.append(cs)
         else:
             dupes.append(cs)
-    return {"ids": ids, "names": names, "added": added, "updated": updated, "dupes": dupes}
+    return {"ids": ids, "names": names, "added": added, "updated": updated,
+            "dupes": dupes, "locked": locked}
 
 
 def load_server() -> str:
@@ -247,10 +256,21 @@ class handler(BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(data)
 
-    def _authorized(self) -> bool:
-        expected = os.environ.get("PAGE_PASSWORD", "")
-        given = urllib.parse.unquote(self.headers.get("X-Password", ""))
+    def _check(self, env: str, header: str) -> bool:
+        expected = os.environ.get(env, "")
+        given = urllib.parse.unquote(self.headers.get(header, ""))
         return bool(expected) and hmac.compare_digest(given.encode(), expected.encode())
+
+    def _authorized(self) -> bool:
+        return self._check("PAGE_PASSWORD", "X-Password")
+
+    def _admin(self) -> bool:
+        return self._check("ADMIN_PASSWORD", "X-Admin-Password")
+
+    def _deny_admin(self) -> None:
+        msg = ("관리자 비밀번호가 설정되지 않았습니다." if not os.environ.get("ADMIN_PASSWORD")
+               else "관리자 비밀번호가 필요합니다.")
+        return self._send(403, {"error": msg, "admin": False})
 
     def _route(self) -> str:
         return urllib.parse.urlparse(self.path).path.rstrip("/").rsplit("/", 1)[-1]
@@ -270,6 +290,8 @@ class handler(BaseHTTPRequestHandler):
         try:
             if self._route() == "state":
                 return self._send(200, {"ids": load_ids(), "names": load_names(), "server": load_server()})
+            if self._route() == "admin":
+                return self._send(200, {"admin": True}) if self._admin() else self._deny_admin()
             if self._route() == "servers":
                 return self._send(200, {"servers": CouponSite().server_names()})
             return self._send(404, {"error": "not found"})
@@ -285,7 +307,7 @@ class handler(BaseHTTPRequestHandler):
                 ids = load_ids()
                 if "entries" in body:
                     names = load_names()
-                    r = merge_entries(ids, names, body["entries"])
+                    r = merge_entries(ids, names, body["entries"], admin=self._admin())
                     if r["added"]:
                         save_ids(r["ids"])
                     if r["names"] != names:
@@ -297,6 +319,8 @@ class handler(BaseHTTPRequestHandler):
                     save_ids(ids + new)
                     return self._send(200, {"added": new, "dupes": dupes, "ids": ids + new, "names": load_names()})
                 if "remove" in body:
+                    if not self._admin():
+                        return self._deny_admin()
                     rm = set(clean_items(body["remove"]))
                     kept = [x for x in ids if x not in rm]
                     save_ids(kept)
@@ -307,6 +331,8 @@ class handler(BaseHTTPRequestHandler):
                     return self._send(200, {"removed": sorted(rm & set(ids)), "ids": kept, "names": names})
                 return self._send(400, {"error": "add 또는 remove 가 필요합니다."})
             if route == "server":
+                if not self._admin():
+                    return self._deny_admin()
                 server = str(body.get("server") or "").strip()
                 if not server:
                     return self._send(400, {"error": "server 가 필요합니다."})
