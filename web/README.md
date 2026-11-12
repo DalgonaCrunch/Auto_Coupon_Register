@@ -5,13 +5,14 @@ PC를 켜 둘 필요 없는 웹페이지 버전. 쿠폰 코드를 넣으면 등�
 
 - 주소: https://soulstrike-coupon.vercel.app (비밀번호: Vercel 환경변수 `PAGE_PASSWORD`)
 - 크롬 없음: 쿠폰 페이지 HTML에서 `Page-Key`, `Coupon-Page-Token` 을 읽어 `POST /tp/coupon/use` 를 직접 호출
-- 저장소: Upstash Redis (Vercel Marketplace) — 키 `coupon:ids`, `coupon:server`
+- 저장소: Upstash Redis (Vercel Marketplace) — 키 `coupon:ids`(CS 코드 목록), `coupon:names`(CS 코드 → 게임 아이디), `coupon:server`
+- ID 목록·결과에 아이디와 CS 코드를 같이 보여 준다. 직접 추가는 한 줄에 `아이디 CS코드`, 엑셀은 2행부터 A·B열 (숫자만 있는 칸 = CS 코드, 다른 칸 = 아이디). 이미 있는 CS 코드에 아이디를 주면 아이디만 바뀐다.
 
 ## 구성
 
 | 파일 | 역할 |
 |---|---|
-| `index.html` | 화면 (비밀번호, 쿠폰 등록, ID 추가/삭제/엑셀, 서버 변경) |
+| `index.html` | 화면 (비밀번호, 쿠폰 등록, 아이디+CS 코드 추가/삭제/엑셀, 서버 변경) |
 | `api/index.py` | API (`/api/state`, `/api/servers`, `/api/ids`, `/api/server`, `/api/coupon`) |
 | `vercel.json` | `/api/*` → `api/index.py` |
 

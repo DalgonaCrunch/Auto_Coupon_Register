@@ -37,6 +37,9 @@
   ul.ids li { display: flex; justify-content: space-between; align-items: center;
               padding: 6px 0; border-bottom: 1px solid var(--line); font-family: ui-monospace, monospace; }
   ul.ids li button { padding: 4px 10px; font-size: 13px; }
+  ul.ids li .who { display: flex; gap: 10px; align-items: baseline; min-width: 0; flex-wrap: wrap; }
+  ul.ids li .name { font-family: inherit; font-weight: 600; }
+  ul.ids li .cs { color: var(--muted); }
   .res { margin-top: 10px; font-size: 14px; }
   .res div { padding: 4px 0; border-bottom: 1px solid var(--line); word-break: break-all; }
   .ok { color: var(--ok); } .bad { color: var(--bad); }
@@ -69,13 +72,13 @@
     <section class="card">
       <h2>등록된 ID <span id="idCount" class="muted"></span></h2>
       <ul id="idList" class="ids"></ul>
-      <textarea id="newIds" placeholder="추가할 CS 코드 (여러 개 가능)" style="margin-top:10px"></textarea>
+      <textarea id="newIds" placeholder="한 줄에 하나: 아이디 CS코드 (예: 홍길동 12345678901)&#10;CS 코드만 써도 됩니다. 이미 있는 CS 코드에 아이디를 쓰면 아이디가 바뀝니다." style="margin-top:10px"></textarea>
       <div class="row">
         <button id="addBtn">추가</button>
         <label class="file"><button type="button" class="ghost" id="xlsxBtn">엑셀로 추가</button></label>
         <input id="xlsx" type="file" accept=".xlsx,.xlsm" class="hidden" />
       </div>
-      <p class="muted">엑셀은 A열 2행부터 ID로 읽습니다 (1행은 헤더).</p>
+      <p class="muted">엑셀은 2행부터 A·B열을 읽습니다 (1행은 헤더). 숫자만 있는 칸을 CS 코드로, 다른 칸을 아이디로 봅니다.</p>
       <p id="idMsg" class="muted"></p>
     </section>
 
@@ -116,6 +119,20 @@ async function api(path, body) {
 }
 
 const split = (s) => [...new Set(s.split(/[\s,]+/).map((x) => x.trim()).filter(Boolean))];
+// CS 코드 = 숫자만 8자리 이상 (하이픈·공백 허용). 그 밖의 값은 아이디로 본다.
+const csOf = (v) => { const t = String(v ?? "").trim(); return /^[\d\s-]+$/.test(t) && t.replace(/\D/g, "").length >= 8 ? t.replace(/\D/g, "") : ""; };
+// 한 줄 → [{cs, name}]. "아이디 CS" / "CS 아이디" / "CS CS CS" 모두 받는다.
+function parseLine(line) {
+  const toks = line.split(/[\s,\t]+/).map((x) => x.trim()).filter(Boolean);
+  if (!toks.length) return { entries: [] };
+  const codes = toks.filter(csOf), rest = toks.filter((t) => !csOf(t));
+  if (!codes.length) return { bad: line };
+  if (!rest.length) return { entries: codes.map((t) => ({ cs: csOf(t), name: "" })) };
+  if (codes.length > 1) return { bad: line };
+  return { entries: [{ cs: csOf(codes[0]), name: rest.join(" ") }] };
+}
+let names = {};
+const label = (cs, nm) => (nm ?? names[cs]) ? `${nm ?? names[cs]} (${cs})` : cs;
 const esc = (s) => String(s).replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
 
 function showLogin(msg) {
@@ -124,17 +141,18 @@ function showLogin(msg) {
   $("loginMsg").textContent = msg || "";
 }
 
-function renderIds(ids) {
+function renderIds(ids, nm) {
+  if (nm) names = nm;
   $("idCount").textContent = `(${ids.length}개)`;
   $("idList").innerHTML = ids.length
-    ? ids.map((id) => `<li><span>${esc(id)}</span><button class="ghost" data-id="${esc(id)}">삭제</button></li>`).join("")
+    ? ids.map((id) => `<li><span class="who">${names[id] ? `<span class="name">${esc(names[id])}</span>` : ""}<span class="cs">${esc(id)}</span></span><button class="ghost" data-id="${esc(id)}">삭제</button></li>`).join("")
     : `<li class="muted">등록된 ID가 없습니다.</li>`;
 }
 
 async function loadAll() {
   const st = await api("state");
   $("login").classList.add("hidden"); $("app").classList.remove("hidden");
-  renderIds(st.ids);
+  renderIds(st.ids, st.names || {});
   const sel = $("server");
   sel.innerHTML = `<option>${esc(st.server)}</option>`;
   try {
@@ -164,7 +182,7 @@ $("runBtn").onclick = async () => {
       for (const r of results) {
         r.ok ? ok++ : bad++;
         $("results").insertAdjacentHTML("beforeend",
-          `<div class="${r.ok ? "ok" : "bad"}">${r.ok ? "✅" : "❌"} <b>${esc(r.id)}</b> · ${esc(r.coupon)} — ${esc(r.msg || r.code)}</div>`);
+          `<div class="${r.ok ? "ok" : "bad"}">${r.ok ? "✅" : "❌"} <b>${esc(label(r.id, r.name || undefined))}</b> · ${esc(r.coupon)} — ${esc(r.msg || r.code)}</div>`);
       }
     } catch (e) {
       if (e.message === "unauthorized") break;
@@ -176,22 +194,32 @@ $("runBtn").onclick = async () => {
   $("runBtn").disabled = false;
 };
 
-async function addIds(list, label) {
-  if (!list.length) { $("idMsg").textContent = "추가할 ID가 없습니다."; return; }
-  const r = await api("ids", { add: list });
-  renderIds(r.ids);
-  $("idMsg").textContent = `${label}추가 ${r.added.length}개` + (r.dupes.length ? `, 이미 있음 ${r.dupes.length}개` : "");
+async function addEntries(entries, prefix, bad) {
+  const tail = bad && bad.length ? ` · 못 읽은 줄 ${bad.length}개: ${bad.slice(0, 3).join(" / ")}${bad.length > 3 ? " …" : ""}` : "";
+  if (!entries.length) { $("idMsg").textContent = "추가할 CS 코드가 없습니다." + tail; return false; }
+  const r = await api("ids", { entries });
+  renderIds(r.ids, r.names);
+  $("idMsg").textContent = `${prefix}추가 ${r.added.length}개`
+    + (r.updated.length ? `, 아이디 변경 ${r.updated.length}개` : "")
+    + (r.dupes.length ? `, 이미 있음 ${r.dupes.length}개` : "") + tail;
+  return !(bad && bad.length);
 }
 
 $("addBtn").onclick = async () => {
-  try { await addIds(split($("newIds").value), ""); $("newIds").value = ""; }
+  const entries = [], bad = [];
+  for (const line of $("newIds").value.split(/\n/)) {
+    const p = parseLine(line);
+    p.bad ? bad.push(p.bad.trim()) : entries.push(...p.entries);
+  }
+  try { if (await addEntries(entries, "", bad)) $("newIds").value = ""; }
   catch (e) { if (e.message !== "unauthorized") $("idMsg").textContent = e.message; }
 };
 
 $("idList").onclick = async (e) => {
   const id = e.target.dataset && e.target.dataset.id;
-  if (!id || !confirm(`${id} 를 삭제할까요?`)) return;
-  try { const r = await api("ids", { remove: [id] }); renderIds(r.ids); $("idMsg").textContent = `${id} 삭제됨`; }
+  if (!id || !confirm(`${label(id)} 를 삭제할까요?`)) return;
+  const shown = label(id);
+  try { const r = await api("ids", { remove: [id] }); renderIds(r.ids, r.names); $("idMsg").textContent = `${shown} 삭제됨`; }
   catch (err) { if (err.message !== "unauthorized") $("idMsg").textContent = err.message; }
 };
 
@@ -201,8 +229,16 @@ $("xlsx").onchange = async () => {
   try {
     const wb = XLSX.read(await f.arrayBuffer());
     const rows = XLSX.utils.sheet_to_json(wb.Sheets[wb.SheetNames[0]], { header: 1 });
-    const ids = rows.slice(1).map((r) => (r && r[0] != null ? String(r[0]).trim() : "")).filter(Boolean);
-    await addIds([...new Set(ids)], `엑셀 ${ids.length}건 인식 → `);
+    const entries = [];
+    let skipped = 0;
+    for (const r of rows.slice(1)) {
+      const a = r && r[0] != null ? String(r[0]).trim() : "", b = r && r[1] != null ? String(r[1]).trim() : "";
+      if (!a && !b) continue;
+      if (csOf(a)) entries.push({ cs: csOf(a), name: csOf(b) ? "" : b });
+      else if (csOf(b)) entries.push({ cs: csOf(b), name: a });
+      else skipped++;
+    }
+    await addEntries(entries, `엑셀 ${entries.length}건 인식${skipped ? ` (CS 코드 없는 행 ${skipped}개 건너뜀)` : ""} → `);
   } catch (e) { if (e.message !== "unauthorized") $("idMsg").textContent = "엑셀 읽기 실패: " + e.message; }
   $("xlsx").value = "";
 };

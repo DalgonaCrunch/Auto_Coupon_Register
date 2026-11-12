@@ -1,8 +1,8 @@
 """Vercel serverless API for the SoulStrike coupon page.
 
 Routes (all require the X-Password header to match PAGE_PASSWORD):
-  GET  /api/state            -> {"ids": [...], "server": "...", "servers": [...]}
-  POST /api/ids    {"add": [...]} | {"remove": [...]}
+  GET  /api/state            -> {"ids": [...], "names": {cs: name}, "server": "..."}
+  POST /api/ids    {"add": [...]} | {"entries": [{"cs": .., "name": ..}]} | {"remove": [...]}
   POST /api/server {"server": "KR/JP/GLB"}
   POST /api/coupon {"coupon": "CODE"}  -> registers CODE for every saved ID
 
@@ -70,6 +70,57 @@ def load_ids() -> list[str]:
 
 def save_ids(ids: list[str]) -> None:
     _redis("SET", "coupon:ids", json.dumps(ids, ensure_ascii=False))
+
+
+def load_names() -> dict[str, str]:
+    """CS code -> 게임 아이디(표시용 이름). Stored apart from coupon:ids so the
+    old list-of-strings format keeps working untouched."""
+    raw = _redis("GET", "coupon:names")
+    if not raw:
+        return {}
+    try:
+        data = json.loads(raw)
+    except json.JSONDecodeError:
+        return {}
+    return {str(k): str(v) for k, v in data.items()} if isinstance(data, dict) else {}
+
+
+def save_names(names: dict[str, str]) -> None:
+    _redis("SET", "coupon:names", json.dumps(names, ensure_ascii=False))
+
+
+def clean_entries(entries) -> list[tuple[str, str]]:
+    """[{"cs": "...", "name": "..."}] -> [(cs, name)], deduped by CS code.
+    CS code keeps digits only; a later row for the same code wins."""
+    out: dict[str, str] = {}
+    for e in entries or []:
+        if not isinstance(e, dict):
+            continue
+        cs = re.sub(r"[^0-9]", "", str(e.get("cs") or ""))
+        if not cs:
+            continue
+        name = re.sub(r"\s+", " ", str(e.get("name") or "")).strip()[:40]
+        if name or cs not in out:
+            out[cs] = name
+    return list(out.items())
+
+
+def merge_entries(ids: list[str], names: dict[str, str], entries) -> dict:
+    """Add new CS codes, and set/replace names for codes given with one."""
+    ids, names = list(ids), dict(names)
+    added, updated, dupes = [], [], []
+    for cs, name in clean_entries(entries):
+        if cs not in ids:
+            ids.append(cs)
+            added.append(cs)
+            if name:
+                names[cs] = name
+        elif name and names.get(cs) != name:
+            names[cs] = name
+            updated.append(cs)
+        else:
+            dupes.append(cs)
+    return {"ids": ids, "names": names, "added": added, "updated": updated, "dupes": dupes}
 
 
 def load_server() -> str:
@@ -173,7 +224,7 @@ class CouponSite:
         return ok, code, msg
 
 
-def register_all(coupon: str, ids: list[str], server: str) -> list[dict]:
+def register_all(coupon: str, ids: list[str], server: str, names: dict[str, str] | None = None) -> list[dict]:
     site = CouponSite()
     server_value = site.server_value(server)
     results = []
@@ -181,7 +232,7 @@ def register_all(coupon: str, ids: list[str], server: str) -> list[dict]:
         if i:
             time.sleep(SLEEP_SEC)
         ok, code, msg = site.use(server_value, cs, coupon)
-        results.append({"id": cs, "coupon": coupon, "ok": ok, "code": code, "msg": msg})
+        results.append({"id": cs, "name": (names or {}).get(cs, ""), "coupon": coupon, "ok": ok, "code": code, "msg": msg})
     return results
 
 
@@ -218,7 +269,7 @@ class handler(BaseHTTPRequestHandler):
             return self._send(401, {"error": "비밀번호가 틀렸습니다."})
         try:
             if self._route() == "state":
-                return self._send(200, {"ids": load_ids(), "server": load_server()})
+                return self._send(200, {"ids": load_ids(), "names": load_names(), "server": load_server()})
             if self._route() == "servers":
                 return self._send(200, {"servers": CouponSite().server_names()})
             return self._send(404, {"error": "not found"})
@@ -232,16 +283,28 @@ class handler(BaseHTTPRequestHandler):
         try:
             if route == "ids":
                 ids = load_ids()
+                if "entries" in body:
+                    names = load_names()
+                    r = merge_entries(ids, names, body["entries"])
+                    if r["added"]:
+                        save_ids(r["ids"])
+                    if r["names"] != names:
+                        save_names(r["names"])
+                    return self._send(200, r)
                 if "add" in body:
                     new = [x for x in clean_items(body["add"]) if x not in ids]
                     dupes = [x for x in clean_items(body["add"]) if x in ids]
                     save_ids(ids + new)
-                    return self._send(200, {"added": new, "dupes": dupes, "ids": ids + new})
+                    return self._send(200, {"added": new, "dupes": dupes, "ids": ids + new, "names": load_names()})
                 if "remove" in body:
                     rm = set(clean_items(body["remove"]))
                     kept = [x for x in ids if x not in rm]
                     save_ids(kept)
-                    return self._send(200, {"removed": sorted(rm & set(ids)), "ids": kept})
+                    names = load_names()
+                    if rm & set(names):
+                        names = {k: v for k, v in names.items() if k not in rm}
+                        save_names(names)
+                    return self._send(200, {"removed": sorted(rm & set(ids)), "ids": kept, "names": names})
                 return self._send(400, {"error": "add 또는 remove 가 필요합니다."})
             if route == "server":
                 server = str(body.get("server") or "").strip()
@@ -257,7 +320,7 @@ class handler(BaseHTTPRequestHandler):
                 ids = load_ids()
                 if not ids:
                     return self._send(400, {"error": "등록된 ID가 없습니다."})
-                return self._send(200, {"results": register_all(coupon, ids, load_server())})
+                return self._send(200, {"results": register_all(coupon, ids, load_server(), load_names())})
             return self._send(404, {"error": "not found"})
         except Exception as e:
             return self._send(500, {"error": str(e)})
